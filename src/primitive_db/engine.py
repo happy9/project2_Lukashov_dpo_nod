@@ -3,8 +3,8 @@ import shlex
 import prompt
 from prettytable import PrettyTable
 
-from .decorators import create_cacher
 from .core import create_table, delete, drop_table, insert, select, update
+from .decorators import create_cacher
 from .parser import parse_set, parse_where
 from .utils import load_metadata, load_table_data, save_metadata, save_table_data
 
