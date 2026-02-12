@@ -3,11 +3,13 @@ import shlex
 import prompt
 from prettytable import PrettyTable
 
+from .decorators import create_cacher
 from .core import create_table, delete, drop_table, insert, select, update
 from .parser import parse_set, parse_where
 from .utils import load_metadata, load_table_data, save_metadata, save_table_data
 
 DB_META_FILEPATH = "db_meta.json"
+SELECT_CACHE = create_cacher()
 
 
 def print_help() -> None:
@@ -19,8 +21,7 @@ def print_help() -> None:
     print("<command> select from <имя_таблицы> where <столбец> = <значение>\
 - прочитать по условию.")
     print("<command> select from <имя_таблицы> - прочитать все записи.")
-    print(
-        "<command> update <имя_таблицы> set <столбец> = <значение> where <столбец>\
+    print("<command> update <имя_таблицы> set <столбец> = <значение> where <столбец>\
 = <значение> - обновить."
     )
     print("<command> delete from <имя_таблицы> where <столбец> = <значение> - удалить.")
@@ -42,7 +43,9 @@ def run() -> None:
 
     while True:
         metadata = load_metadata(DB_META_FILEPATH)
-
+        if metadata is None:
+            metadata = {}
+            
         user_input = prompt.string(prompt="Введите команду: ")
         if user_input is None:
             continue
@@ -90,10 +93,17 @@ def run() -> None:
             if len(args) != 2:
                 print("Некорректное значение: drop_table. Попробуйте снова.")
                 continue
+
             table_name = args[1]
             updated = drop_table(metadata, table_name)
-            if updated is not metadata:
-                save_metadata(DB_META_FILEPATH, updated)
+
+            if updated is None:
+                continue
+
+            save_metadata(DB_META_FILEPATH, updated)
+
+            global SELECT_CACHE
+            SELECT_CACHE = create_cacher()
             continue
 
         if low.startswith("insert into "):
@@ -131,7 +141,12 @@ def _handle_insert(user_input: str, metadata: dict) -> None:
         print(f'Ошибка: Таблица "{table_name}" не существует.')
         return
 
-    insert(metadata, table_name, values)
+    result = insert(metadata, table_name, values)
+    if result is None:
+        return
+
+    global SELECT_CACHE
+    SELECT_CACHE = create_cacher()
 
 
 def _handle_select(user_input: str, metadata: dict) -> None:
@@ -148,7 +163,6 @@ def _handle_select(user_input: str, metadata: dict) -> None:
 
     schema = metadata[table_name]
     columns = list(schema.keys())
-    table_data = load_table_data(table_name)
 
     where_clause = None
     if where_text is not None:
@@ -159,8 +173,22 @@ def _handle_select(user_input: str, metadata: dict) -> None:
             print(f"Некорректное значение: {exc}. Попробуйте снова.")
             return
 
-    rows = select(table_data, where_clause=where_clause)
+    where_key = None
+    if where_clause is not None:
+        where_key = tuple(where_clause.items())
+
+    cache_key = (table_name, where_key)
+
+    rows = SELECT_CACHE(
+        cache_key,
+        lambda: select(load_table_data(table_name), where_clause=where_clause),
+    )
+
+    if rows is None:
+        return
+
     _print_rows(rows, columns)
+
 
 
 def _handle_update(user_input: str, metadata: dict) -> None:
@@ -192,7 +220,6 @@ def _handle_update(user_input: str, metadata: dict) -> None:
     if after != before:
         save_table_data(table_name, after)
 
-        # Если обновили ровно одну запись — выведем ID
         ids_before = {row.get("ID") for row in before}
         ids_after = {row.get("ID") for row in after}
         _ = ids_before, ids_after
@@ -207,10 +234,13 @@ def _handle_update(user_input: str, metadata: dict) -> None:
 " успешно обновлена.')
         else:
             print(f'Записи в таблице "{table_name}" успешно обновлены.')
+            
+        global SELECT_CACHE
+        SELECT_CACHE = create_cacher()
+    
         return
 
     print("Записи для обновления не найдены.")
-
 
 
 def _handle_delete(user_input: str, metadata: dict) -> None:
@@ -227,14 +257,15 @@ def _handle_delete(user_input: str, metadata: dict) -> None:
 
     schema = metadata[table_name]
     table_data = load_table_data(table_name)
+    before_len = len(table_data)
 
     try:
-        where_clause = _cast_clause(schema, parse_where(where_text))
+        where_clause = parse_where(where_text)
+        where_clause = _cast_clause(schema, where_clause)
     except ValueError as exc:
         print(f"Некорректное значение: {exc}. Попробуйте снова.")
         return
 
-    # Ищем ID удаляемой записи
     w_key, w_val = next(iter(where_clause.items()))
     target_id = None
     for row in table_data:
@@ -243,19 +274,22 @@ def _handle_delete(user_input: str, metadata: dict) -> None:
             break
 
     new_data = delete(table_data, where_clause=where_clause)
-
-    if target_id is not None and len(new_data) < len(table_data):
-        save_table_data(table_name, new_data)
-        print(f'Запись с ID={target_id} успешно удалена из таблицы "{table_name}".')
+    if new_data is None:
         return
 
-    if len(new_data) < len(table_data):
+    if len(new_data) < before_len:
         save_table_data(table_name, new_data)
-        print(f'Удалено записей: {len(table_data) - len(new_data)}.')
+
+        if target_id is not None:
+            print(f'Запись с ID={target_id} успешно удалена из таблицы "{table_name}".')
+        else:
+            print(f'Удалено записей: {before_len - len(new_data)}.')
+
+        global SELECT_CACHE
+        SELECT_CACHE = create_cacher()
         return
 
     print("Записи для удаления не найдены.")
-
 
 
 def _handle_info(user_input: str, metadata: dict) -> None:

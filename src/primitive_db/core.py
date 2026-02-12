@@ -1,8 +1,10 @@
+from .decorators import confirm_action, handle_db_errors, log_time
 from .utils import load_table_data, save_table_data
 
 ALLOWED_TYPES = {"int", "str", "bool"}
 
 
+@handle_db_errors
 def create_table(metadata: dict, table_name: str, columns: list[str]) -> dict:
     """Создать таблицу."""
     if table_name in metadata:
@@ -43,7 +45,9 @@ def create_table(metadata: dict, table_name: str, columns: list[str]) -> dict:
     print(f'Таблица "{table_name}" успешно создана со столбцами: {cols_str}')
 
     return new_metadata
-
+    
+@handle_db_errors
+@confirm_action("удаление таблицы")
 def drop_table(metadata: dict, table_name: str) -> dict:
     """Удалить таблицу."""
     if table_name not in metadata:
@@ -90,6 +94,8 @@ def _cast_value(value: object, target_type: str) -> object | None:
     return None
 
 
+@handle_db_errors
+@log_time
 def insert(metadata: dict, table_name: str, values: list[object]) -> list[dict]:
     """Добавить запись."""
     if table_name not in metadata:
@@ -137,6 +143,8 @@ def insert(metadata: dict, table_name: str, values: list[object]) -> list[dict]:
     return table_data
 
 
+@handle_db_errors
+@log_time
 def select(table_data: list[dict], where_clause: dict | None = None) -> list[dict]:
     """Выбрать записи."""
     if where_clause is None:
@@ -149,6 +157,7 @@ def select(table_data: list[dict], where_clause: dict | None = None) -> list[dic
     return [row for row in table_data if row.get(key) == value]
 
 
+@handle_db_errors
 def update(table_data: list[dict], set_clause: dict, where_clause: dict) -> list[dict]:
     """Обновить записи."""
     if len(where_clause) != 1:
@@ -170,6 +179,8 @@ def update(table_data: list[dict], set_clause: dict, where_clause: dict) -> list
     return table_data
 
 
+@handle_db_errors
+@confirm_action("удаление записи")
 def delete(table_data: list[dict], where_clause: dict) -> list[dict]:
     """Удалить записи."""
     if len(where_clause) != 1:
